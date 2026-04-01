@@ -78,6 +78,9 @@
       font-weight: 700;
       cursor: pointer;
       min-height: 42px;
+      position: relative;
+      z-index: 20;
+      pointer-events: auto;
     }
 
     button:active { transform: translateY(1px); }
@@ -151,6 +154,8 @@
       padding: 10px;
       background: rgba(10, 12, 20, 0.95);
       border-top: 1px solid rgba(255,255,255,0.08);
+      position: relative;
+      z-index: 25;
     }
 
     .skillRow, .shopRow {
@@ -158,6 +163,8 @@
       gap: 8px;
       overflow-x: auto;
       padding-bottom: 2px;
+      position: relative;
+      z-index: 30;
     }
 
     .skill {
@@ -495,6 +502,38 @@
       { name: 'Fang', cost: 160, bonusDamage: 14, bonusHp: 40, desc: 'Hybrid' },
     ];
 
+    function buildControls() {
+      skillsEl.innerHTML = '';
+      state.player.skills.forEach((skill, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'skill';
+        btn.dataset.skillIndex = String(i);
+        const triggerSkill = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          tryCastSkill(state.player, i);
+        };
+        btn.addEventListener('pointerdown', triggerSkill);
+        btn.addEventListener('click', triggerSkill);
+        skillsEl.appendChild(btn);
+      });
+
+      shopEl.innerHTML = '';
+      SHOP_ITEMS.forEach((item, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'shopItem';
+        btn.dataset.shopIndex = String(i);
+        const triggerBuy = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          buyItem(i);
+        };
+        btn.addEventListener('pointerdown', triggerBuy);
+        btn.addEventListener('click', triggerBuy);
+        shopEl.appendChild(btn);
+      });
+    }
+
     function init() {
       resize();
       laneY = H * 0.52;
@@ -510,6 +549,7 @@
       state.enemy = makeHero('right');
       state.player.skills = SKILLS.map(s => ({ ...s, cd: 0 }));
       state.enemy.skills = SKILLS.map(s => ({ ...s, cd: rand(0.5, 4) }));
+      buildControls();
       spawnWave();
       updateUI();
       showMessage('Kampf gestartet! Jetzt kannst du dich frei im ganzen Feld bewegen.', 2.6);
@@ -867,7 +907,8 @@
       }
       hero.gold -= item.cost;
       hero.items.push(item);
-      showMessage(item.name + ' gekauft', 1.1);
+      showMessage(item.name + ' gekauft (-' + item.cost + ' Gold)', 1.1);
+      updateUI();
     }
 
     function update(dt) {
@@ -1072,24 +1113,18 @@
         <div class="pill">Items <strong>${p.items.length}</strong></div>
       `;
 
-      skillsEl.innerHTML = '';
-      p.skills.forEach((skill, i) => {
-        const btn = document.createElement('button');
-        btn.className = 'skill';
+      const skillButtons = skillsEl.querySelectorAll('button');
+      skillButtons.forEach((btn, i) => {
+        const skill = p.skills[i];
         btn.disabled = p.dead || skill.cd > 0 || p.mana < skill.cost || !!state.winner;
         btn.innerHTML = `<div>${skill.key} · ${skill.name}</div><small>${skill.cd > 0 ? 'CD ' + skill.cd.toFixed(1) + 's' : skill.cost + ' Mana'}</small>`;
-        btn.onclick = () => tryCastSkill(p, i);
-        skillsEl.appendChild(btn);
       });
 
-      shopEl.innerHTML = '';
-      SHOP_ITEMS.forEach((item, i) => {
-        const btn = document.createElement('button');
-        btn.className = 'shopItem';
+      const shopButtons = shopEl.querySelectorAll('button');
+      shopButtons.forEach((btn, i) => {
+        const item = SHOP_ITEMS[i];
         btn.disabled = p.gold < item.cost || !!state.winner;
         btn.innerHTML = `<div>${item.name} · ${item.cost}g</div><small>${item.desc}</small>`;
-        btn.onclick = () => buyItem(i);
-        shopEl.appendChild(btn);
       });
     }
 
