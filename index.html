@@ -287,8 +287,9 @@
       player: null,
       enemy: null,
       input: {
-        moveLeft: false,
-        moveRight: false,
+        mouseX: 0,
+        mouseY: 0,
+        moving: false,
       },
       uiMessageTimer: 0,
       message: '',
@@ -306,6 +307,7 @@
       heroKillExp: 90,
       laneTopOffset: -60,
       laneBottomOffset: 60,
+      arenaPadding: 44,
     };
 
     const COLORS = {
@@ -354,6 +356,9 @@
         vx: 0,
         vy: 0,
         radius: 22,
+        facing: isPlayer ? 0 : Math.PI,
+        moveTargetX: baseX,
+        moveTargetY: laneY,
         maxHp: 350,
         hp: 350,
         maxMana: 160,
@@ -363,7 +368,7 @@
         attackRange: 74,
         attackCd: 0,
         attackSpeed: 0.8,
-        moveSpeed: 72,
+        moveSpeed: 150,
         level: 1,
         exp: 0,
         gold: 0,
@@ -373,7 +378,7 @@
         skillPointsSpent: 0,
         dead: false,
         respawnTimer: 0,
-        autoAggroBias: isPlayer ? 1 : -1,
+        buff: null,
       };
     }
 
@@ -409,6 +414,7 @@
         use(caster, enemyHero) {
           const target = findNearestTarget(caster, 340);
           if (!target) return false;
+          faceTowards(caster, target.x, target.y);
           state.projectiles.push({
             from: caster,
             target,
@@ -455,6 +461,7 @@
         use(caster) {
           const target = findNearestTarget(caster, 180, true);
           if (!target) return false;
+          faceTowards(caster, target.x, target.y);
           const amount = 48 + caster.level * 5;
           damageUnit(target, amount, caster);
           healUnit(caster, amount * 0.55);
@@ -505,7 +512,7 @@
       state.enemy.skills = SKILLS.map(s => ({ ...s, cd: rand(0.5, 4) }));
       spawnWave();
       updateUI();
-      showMessage('Kampf gestartet! Creeps geben Gold und XP. Töte den Gegner!', 2.5);
+      showMessage('Kampf gestartet! Jetzt kannst du dich frei im ganzen Feld bewegen.', 2.6);
       requestAnimationFrame(loop);
     }
 
@@ -641,6 +648,30 @@
       }
     }
 
+    function faceTowards(unit, x, y) {
+      const dx = x - unit.x;
+      const dy = y - unit.y;
+      if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
+        unit.facing = Math.atan2(dy, dx);
+      }
+    }
+
+    function moveHeroTowards(hero, tx, ty, speed, dt) {
+      const dx = tx - hero.x;
+      const dy = ty - hero.y;
+      const d = Math.hypot(dx, dy);
+      if (d <= 1) return;
+      const step = Math.min(d, speed * dt);
+      hero.x += (dx / d) * step;
+      hero.y += (dy / d) * step;
+      faceTowards(hero, tx, ty);
+    }
+
+    function keepUnitInArena(unit) {
+      unit.x = clamp(unit.x, CONFIG.arenaPadding, W - CONFIG.arenaPadding);
+      unit.y = clamp(unit.y, CONFIG.arenaPadding, H - CONFIG.arenaPadding);
+    }
+
     function updateHero(hero, dt, controlled = false) {
       if (hero.dead) {
         hero.respawnTimer -= dt;
@@ -650,6 +681,8 @@
           hero.mana = hero.maxMana;
           hero.x = hero.side === 'left' ? 170 : W - 170;
           hero.y = laneY;
+          hero.moveTargetX = hero.x;
+          hero.moveTargetY = hero.y;
         }
         return;
       }
@@ -661,51 +694,53 @@
       }
       const buffDamage = hero.buff ? hero.buff.damage : 0;
       const buffSpeed = hero.buff ? hero.buff.speed : 0;
+      const finalMoveSpeed = stats.moveSpeed + buffSpeed;
 
       hero.mana = clamp(hero.mana + (stats.manaRegen * dt), 0, stats.maxMana);
       hero.attackCd = Math.max(0, hero.attackCd - dt);
       for (const s of hero.skills) s.cd = Math.max(0, s.cd - dt);
 
       if (controlled) {
-        const centerBias = (W * 0.35 - hero.x) * 0.03;
-        const moveDir = (state.input.moveRight ? 1 : 0) - (state.input.moveLeft ? 1 : 0);
-        const vx = (moveDir * (stats.moveSpeed + buffSpeed)) + centerBias;
-        hero.x += vx * dt;
-        hero.y += (laneY - hero.y) * dt * 2;
-        hero.x = clamp(hero.x, 80, W - 80);
+        if (state.input.moving) {
+          hero.moveTargetX = state.input.mouseX;
+          hero.moveTargetY = state.input.mouseY;
+        }
+        moveHeroTowards(hero, hero.moveTargetX, hero.moveTargetY, finalMoveSpeed, dt);
       } else {
         enemyAI(hero, dt);
       }
 
+      keepUnitInArena(hero);
+
       const target = findNearestTarget(hero, hero.attackRange + 6);
+      if (target) {
+        faceTowards(hero, target.x, target.y);
+      }
       if (target && hero.attackCd <= 0) {
         hero.attackCd = hero.attackSpeed;
         damageUnit(target, stats.attackDamage + buffDamage, hero);
-      } else {
-        const near = findNearestTarget(hero, 300);
-        if (near) {
-          const dir = Math.sign(near.x - hero.x);
-          hero.x += dir * (stats.moveSpeed + buffSpeed) * dt * 0.65;
-        }
       }
     }
 
     function enemyAI(hero, dt) {
       state.enemyThinkTimer -= dt;
       const stats = heroStatsWithItems(hero);
-      const target = findNearestTarget(hero, 320, true);
+      const target = findNearestTarget(hero, 350, true);
       const player = state.player;
+      const finalMoveSpeed = stats.moveSpeed + (hero.buff ? hero.buff.speed : 0);
 
       if (target) {
-        const dir = Math.sign(target.x - hero.x);
-        const desired = target.type === 'hero' ? 0.7 : 0.45;
-        hero.x += dir * (stats.moveSpeed + (hero.buff ? hero.buff.speed : 0)) * dt * desired;
+        const d = dist(hero, target);
+        if (d > hero.attackRange * 0.85) {
+          moveHeroTowards(hero, target.x, target.y, finalMoveSpeed * 0.72, dt);
+        } else {
+          faceTowards(hero, target.x, target.y);
+        }
       } else {
-        hero.x += -1 * stats.moveSpeed * dt * 0.2;
+        moveHeroTowards(hero, W * 0.72, laneY, finalMoveSpeed * 0.45, dt);
       }
 
-      hero.y += (laneY - hero.y) * dt * 2;
-      hero.x = clamp(hero.x, 80, W - 80);
+      keepUnitInArena(hero);
 
       if (state.enemyThinkTimer <= 0) {
         state.enemyThinkTimer = rand(0.6, 1.4);
@@ -869,34 +904,56 @@
       updateUI();
     }
 
-    function drawLane() {
+    function drawArena() {
       ctx.fillStyle = COLORS.grass;
       ctx.fillRect(0, 0, W, H);
 
-      const stripeH = 92;
-      ctx.fillStyle = '#202742';
-      ctx.fillRect(0, laneY - stripeH / 2, W, stripeH);
+      ctx.fillStyle = '#171d30';
+      ctx.fillRect(CONFIG.arenaPadding, CONFIG.arenaPadding, W - CONFIG.arenaPadding * 2, H - CONFIG.arenaPadding * 2);
+
+      ctx.strokeStyle = '#334060';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(CONFIG.arenaPadding, CONFIG.arenaPadding, W - CONFIG.arenaPadding * 2, H - CONFIG.arenaPadding * 2);
 
       ctx.strokeStyle = COLORS.bgLine;
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(0, laneY);
-      ctx.lineTo(W, laneY);
+      ctx.moveTo(CONFIG.arenaPadding, laneY);
+      ctx.lineTo(W - CONFIG.arenaPadding, laneY);
       ctx.stroke();
 
       ctx.setLineDash([16, 14]);
       ctx.strokeStyle = '#485373';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(0, laneY - 28);
-      ctx.lineTo(W, laneY - 28);
-      ctx.moveTo(0, laneY + 28);
-      ctx.lineTo(W, laneY + 28);
+      ctx.moveTo(W / 2, CONFIG.arenaPadding);
+      ctx.lineTo(W / 2, H - CONFIG.arenaPadding);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
 
-      ctx.fillStyle = '#24304f';
-      ctx.fillRect(W/2 - 4, laneY - 64, 8, 128);
+    function drawTriangleHero(unit, main, accent) {
+      ctx.save();
+      ctx.translate(unit.x, unit.y);
+      ctx.rotate(unit.facing);
+      ctx.fillStyle = main;
+      ctx.beginPath();
+      ctx.moveTo(20, 0);
+      ctx.lineTo(-14, -14);
+      ctx.lineTo(-9, 0);
+      ctx.lineTo(-14, 14);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-6, -6);
+      ctx.lineTo(-2, 0);
+      ctx.lineTo(-6, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     }
 
     function drawUnit(unit) {
@@ -910,10 +967,14 @@
       const accent = isLeft ? '#dffcf7' : '#ffe2e2';
 
       if (unit.type === 'hero') {
-        ctx.fillStyle = main;
-        ctx.fillRect(unit.x - 16, unit.y - 16, 32, 32);
-        ctx.fillStyle = accent;
-        ctx.fillRect(unit.x - 7, unit.y - 7, 14, 14);
+        if (unit === state.player) {
+          drawTriangleHero(unit, main, accent);
+        } else {
+          ctx.fillStyle = main;
+          ctx.fillRect(unit.x - 16, unit.y - 16, 32, 32);
+          ctx.fillStyle = accent;
+          ctx.fillRect(unit.x - 7, unit.y - 7, 14, 14);
+        }
         if (unit.buff) {
           ctx.strokeStyle = '#fff0a8';
           ctx.lineWidth = 3;
@@ -979,7 +1040,7 @@
         ctx.translate(rand(-cameraShake, cameraShake), rand(-cameraShake, cameraShake));
       }
 
-      drawLane();
+      drawArena();
       drawUnit(state.player);
       drawUnit(state.enemy);
       for (const creep of state.creeps) drawUnit(creep);
@@ -1041,38 +1102,64 @@
       requestAnimationFrame(loop);
     }
 
+    function setPointerTarget(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      state.input.mouseX = clamp((clientX - rect.left) * scaleX, CONFIG.arenaPadding, W - CONFIG.arenaPadding);
+      state.input.mouseY = clamp((clientY - rect.top) * scaleY, CONFIG.arenaPadding, H - CONFIG.arenaPadding);
+    }
+
     window.addEventListener('resize', resize);
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'a' || e.key === 'ArrowLeft') state.input.moveLeft = true;
-      if (e.key === 'd' || e.key === 'ArrowRight') state.input.moveRight = true;
       const key = e.key.toUpperCase();
       const index = SKILLS.findIndex(s => s.key === key);
       if (index >= 0) tryCastSkill(state.player, index);
     });
 
-    window.addEventListener('keyup', (e) => {
-      if (e.key === 'a' || e.key === 'ArrowLeft') state.input.moveLeft = false;
-      if (e.key === 'd' || e.key === 'ArrowRight') state.input.moveRight = false;
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    canvas.addEventListener('mousedown', (e) => {
+      setPointerTarget(e.clientX, e.clientY);
+      state.input.moving = true;
+      state.player.moveTargetX = state.input.mouseX;
+      state.player.moveTargetY = state.input.mouseY;
     });
 
-    let touchStartX = null;
+    window.addEventListener('mouseup', () => {
+      state.input.moving = false;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      setPointerTarget(e.clientX, e.clientY);
+      if (state.input.moving) {
+        state.player.moveTargetX = state.input.mouseX;
+        state.player.moveTargetY = state.input.mouseY;
+      }
+    });
+
     canvas.addEventListener('touchstart', (e) => {
-      if (e.touches.length > 0) touchStartX = e.touches[0].clientX;
+      if (e.touches.length > 0) {
+        const t = e.touches[0];
+        setPointerTarget(t.clientX, t.clientY);
+        state.input.moving = true;
+        state.player.moveTargetX = state.input.mouseX;
+        state.player.moveTargetY = state.input.mouseY;
+      }
     }, { passive: true });
 
     canvas.addEventListener('touchmove', (e) => {
-      if (e.touches.length > 0 && touchStartX !== null) {
-        const dx = e.touches[0].clientX - touchStartX;
-        state.input.moveLeft = dx < -12;
-        state.input.moveRight = dx > 12;
+      if (e.touches.length > 0) {
+        const t = e.touches[0];
+        setPointerTarget(t.clientX, t.clientY);
+        state.player.moveTargetX = state.input.mouseX;
+        state.player.moveTargetY = state.input.mouseY;
       }
     }, { passive: true });
 
     canvas.addEventListener('touchend', () => {
-      touchStartX = null;
-      state.input.moveLeft = false;
-      state.input.moveRight = false;
+      state.input.moving = false;
     }, { passive: true });
 
     restartBtn.addEventListener('click', init);
